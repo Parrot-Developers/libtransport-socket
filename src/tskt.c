@@ -106,6 +106,14 @@ int tskt_socket_destroy(struct tskt_socket *self)
 }
 
 
+struct pomp_loop *tskt_socket_get_loop(struct tskt_socket *self)
+{
+	ULOG_ERRNO_RETURN_VAL_IF(self == NULL, EINVAL, NULL);
+	ULOG_ERRNO_RETURN_VAL_IF(self->ops->get_loop == NULL, EOPNOTSUPP, NULL);
+	return self->ops->get_loop(self);
+}
+
+
 int tskt_socket_get_fd(struct tskt_socket *self)
 {
 	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);
@@ -257,6 +265,9 @@ int tskt_socket_get_rxpkt_max_size(struct tskt_socket *self)
 {
 	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);
 
+	if (self->ops->get_rxpkt_max_size != NULL)
+		return self->ops->get_rxpkt_max_size(self);
+
 	CHECK_RXPKT_MAX_SIZE(self);
 
 	return (int)self->rxpkt_max_size;
@@ -267,6 +278,9 @@ int tskt_socket_set_rxpkt_max_size(struct tskt_socket *self, size_t max_size)
 {
 	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);
 	ULOG_ERRNO_RETURN_ERR_IF(max_size == 0, EINVAL);
+
+	if (self->ops->set_rxpkt_max_size != NULL)
+		return self->ops->set_rxpkt_max_size(self, max_size);
 
 	if (max_size == self->rxpkt_max_size)
 		return 0;

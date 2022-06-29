@@ -149,6 +149,7 @@ struct socket_impl {
 			size_t wlen;
 			int werror;
 			bool wnotify;
+			uint32_t revents;
 		} tcp;
 	};
 #ifdef __linux__
@@ -453,6 +454,7 @@ static void socket_impl_fd_cb_tcp(int fd, uint32_t revents, void *userdata)
 
 
 static int socket_impl_destroy(struct tskt_socket *sock);
+static struct pomp_loop *socket_impl_get_loop(struct tskt_socket *sock);
 static int socket_impl_get_fd(struct tskt_socket *sock);
 static int socket_impl_set_fd_cb(struct tskt_socket *sock,
 				 pomp_fd_event_cb_t fd_cb,
@@ -526,6 +528,7 @@ static int socket_impl_accept(struct tskt_socket *sock,
 
 static const struct tskt_socket_ops socket_impl_ops = {
 	.destroy = socket_impl_destroy,
+	.get_loop = socket_impl_get_loop,
 	.get_fd = socket_impl_get_fd,
 	.set_fd_cb = socket_impl_set_fd_cb,
 	.get_local_addr = socket_impl_get_local_addr,
@@ -893,15 +896,17 @@ static int tskt_socket_new_tcp0(int fd,
 		goto error;
 	}
 
-	/* Set event handler */
-	res = pomp_loop_add(self->loop,
-			    self->fd,
-			    POMP_FD_EVENT_ERR,
-			    socket_impl_fd_cb_tcp,
-			    self);
-	if (res < 0) {
-		ULOG_ERRNO("pomp_loop_add(fd=%d)", -res, self->fd);
-		goto error;
+	/* Set event handler if socket is from accept() */
+	if (fd >= 0) {
+		res = pomp_loop_add(self->loop,
+				    self->fd,
+				    POMP_FD_EVENT_ERR,
+				    socket_impl_fd_cb_tcp,
+				    self);
+		if (res < 0) {
+			ULOG_ERRNO("pomp_loop_add(fd=%d)", -res, self->fd);
+			goto error;
+		}
 	}
 
 	/* Success */
@@ -974,6 +979,13 @@ static int socket_impl_destroy(struct tskt_socket *sock)
 	free(self);
 
 	return 0;
+}
+
+
+static struct pomp_loop *socket_impl_get_loop(struct tskt_socket *sock)
+{
+	struct socket_impl *self = (struct socket_impl *)sock;
+	return self->loop;
 }
 
 
@@ -2132,6 +2144,11 @@ static int socket_impl_set_event_cb(struct tskt_socket *sock,
 		self->tcp.wnotify = events & POMP_FD_EVENT_OUT;
 		if (self->tcp.wpkt != NULL)
 			events |= POMP_FD_EVENT_OUT;
+		/* Do not update events yet if socket is not setup */
+		if (!pomp_loop_has_fd(self->loop, self->fd)) {
+			self->tcp.revents = events;
+			return 0;
+		}
 		res = pomp_loop_update2(
 			self->loop,
 			self->fd,
@@ -2182,6 +2199,12 @@ static int socket_impl_update_events(struct tskt_socket *sock,
 		/* do not clear OUT event if data to write is pending */
 		if (self->tcp.wpkt != NULL)
 			events_to_remove &= ~POMP_FD_EVENT_OUT;
+		/* do not update events yet if socket is not setup */
+		if (!pomp_loop_has_fd(self->loop, self->fd)) {
+			self->tcp.revents |= events_to_add;
+			self->tcp.revents &= ~events_to_remove;
+			return 0;
+		}
 	}
 
 	return pomp_loop_update2(
@@ -2244,15 +2267,11 @@ static int socket_impl_connect(struct tskt_socket *sock,
 	if (res < 0) {
 		res = -errno;
 #ifdef _WIN32
-		if (res == -WSAEWOULDBLOCK) {
-			log_addrs(self);
-			return 0;
-		}
+		if (res == -WSAEWOULDBLOCK)
+			goto done_tcp;
 #else
-		if (res == -EINPROGRESS) {
-			log_addrs(self);
-			return 0;
-		}
+		if (res == -EINPROGRESS)
+			goto done_tcp;
 #endif
 		ULOG_ERRNO("connect(fd=%d)", -res, self->fd);
 		return res;
@@ -2260,9 +2279,22 @@ static int socket_impl_connect(struct tskt_socket *sock,
 	if (!self->is_tcp) {
 		self->udp.is_connected = remote.sin_addr.s_addr != 0;
 		set_remote(self, &remote);
-	} else {
-		log_addrs(self);
+		return 0;
 	}
+
+done_tcp:
+	/* set event handler */
+	res = pomp_loop_add(self->loop,
+			    self->fd,
+			    POMP_FD_EVENT_ERR | self->tcp.revents,
+			    socket_impl_fd_cb_tcp,
+			    self);
+	if (res < 0) {
+		ULOG_ERRNO("pomp_loop_add(fd=%d)", -res, self->fd);
+		return res;
+	}
+
+	log_addrs(self);
 
 	return 0;
 }
@@ -2289,6 +2321,17 @@ static int socket_impl_listen(struct tskt_socket *sock,
 	if (res < 0) {
 		res = -errno;
 		ULOG_ERRNO("listen(fd=%d)", -res, self->fd);
+		return res;
+	}
+
+	/* set event handler */
+	res = pomp_loop_add(self->loop,
+			    self->fd,
+			    POMP_FD_EVENT_ERR | self->tcp.revents,
+			    socket_impl_fd_cb_tcp,
+			    self);
+	if (res < 0) {
+		ULOG_ERRNO("pomp_loop_add(fd=%d)", -res, self->fd);
 		return res;
 	}
 

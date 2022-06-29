@@ -11,6 +11,7 @@ LOCAL_CFLAGS := -DTSKT_API_EXPORTS -fvisibility=hidden -std=gnu99
 LOCAL_SRC_FILES := \
 	src/tskt.c \
 	src/tskt_impl.c \
+	src/tskt_pomp.c \
 	src/tskt_resolv.c \
 	src/tskt_resolv_impl.c
 LOCAL_LIBRARIES := \
@@ -19,6 +20,7 @@ LOCAL_LIBRARIES := \
 	libtransport-packet \
 	libulog
 ifeq ("$(TARGET_OS)","windows")
+  LOCAL_CFLAGS += -D_WIN32_WINNT=0x0600
   LOCAL_LDLIBS += -lws2_32
 endif
 

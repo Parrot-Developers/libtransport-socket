@@ -53,6 +53,7 @@ enum tskt_option {
 
 struct tskt_socket_ops {
 	int (*destroy)(struct tskt_socket *self);
+	struct pomp_loop *(*get_loop)(struct tskt_socket *self);
 	int (*get_fd)(struct tskt_socket *self);
 	int (*set_fd_cb)(struct tskt_socket *self,
 			 pomp_fd_event_cb_t fd_cb,
@@ -72,6 +73,8 @@ struct tskt_socket_ops {
 	int (*set_option)(struct tskt_socket *self,
 			  enum tskt_option option,
 			  int value);
+	int (*get_rxpkt_max_size)(struct tskt_socket *self);
+	int (*set_rxpkt_max_size)(struct tskt_socket *self, size_t max_size);
 	ssize_t (*read)(struct tskt_socket *self,
 			void *buf,
 			size_t cap,

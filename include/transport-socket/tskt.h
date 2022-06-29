@@ -147,6 +147,14 @@ TSKT_API int tskt_socket_destroy(struct tskt_socket *self);
 
 
 /**
+ * Get the pomp loop used by the socket.
+ * @param self: socket object handle
+ * @return pomp loop on success, NULL in case of error
+ */
+TSKT_API struct pomp_loop *tskt_socket_get_loop(struct tskt_socket *self);
+
+
+/**
  * Get the socket file descriptor.
  * @param self: socket object handle
  * @return file descriptor on success, negative errno value in case of error
