@@ -190,7 +190,7 @@ static void get_monotonic_to_real_time_diff(struct socket_impl *self)
 	if (ts4.tv_sec & 1)
 		ts4.tv_nsec += 500000000;
 	ts4.tv_sec /= 2;
-	while (ts4.tv_nsec > 1000000000) {
+	while (ts4.tv_nsec >= 1000000000) {
 		ts4.tv_sec++;
 		ts4.tv_nsec -= 1000000000;
 	}
