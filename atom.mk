@@ -7,7 +7,7 @@ LOCAL_MODULE := libtransport-socket
 LOCAL_CATEGORY_PATH := libs
 LOCAL_DESCRIPTION := Transport socket library
 LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/include
-LOCAL_CFLAGS := -DTSKT_API_EXPORTS -fvisibility=hidden -std=gnu99
+LOCAL_CFLAGS := -DTSKT_API_EXPORTS -fvisibility=hidden -std=gnu99 -D_GNU_SOURCE
 LOCAL_SRC_FILES := \
 	src/tskt.c \
 	src/tskt_impl.c \
