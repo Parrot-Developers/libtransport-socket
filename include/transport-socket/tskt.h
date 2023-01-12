@@ -413,6 +413,34 @@ TSKT_API ssize_t tskt_socket_writev(struct tskt_socket *self,
 
 
 /**
+ * Write into the socket and set class selector of packet.
+ * @param self: socket object handle
+ * @param buf: pointer to the data to write
+ * @param len: size to write in bytes
+ * @param cs: class selector, -1 to use default socket class selector
+ * @return written bytes count on success, negative errno value in case of error
+ */
+TSKT_API ssize_t tskt_socket_write_cs(struct tskt_socket *self,
+				      const void *buf,
+				      size_t len,
+				      int cs);
+
+
+/**
+ * Write buffers into the socket and set class selector of packet.
+ * @param self: socket object handle
+ * @param iov: array of buffers to write
+ * @param iov_len: number of buffers
+ * @param cs: class selector, -1 to use default socket class selector
+ * @return written bytes count on success, negative errno value in case of error
+ */
+TSKT_API ssize_t tskt_socket_writev_cs(struct tskt_socket *self,
+				       const struct iovec *iov,
+				       size_t iov_len,
+				       int cs);
+
+
+/**
  * Read multiple messages from the socket.
  * @param self: socket object handle
  * @param miov: array of messages to store the read data
@@ -555,7 +583,9 @@ TSKT_API int tskt_socket_connect(struct tskt_socket *self,
  * Bind local address and port, and listen for connections on a socket.
  * @param self: socket object handle
  * @param local_addr: local IP address, NULL or "0.0.0.0" for any address.
- * @param local_port : local port (host byte order), 0 is invalid.
+ * @param local_port : local port (host byte order), if 0 an available
+ *                     port is opened, call tskt_socket_get_local_port()
+ *                     to retrieve the allocated port value.
  * @return 0 on success, negative errno value in case of error.
  */
 TSKT_API int tskt_socket_listen(struct tskt_socket *self,

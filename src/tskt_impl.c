@@ -490,6 +490,14 @@ static ssize_t socket_impl_writev(struct tskt_socket *sock,
 				  size_t iov_len);
 #endif
 #ifdef __linux__
+static ssize_t socket_impl_write_cs(struct tskt_socket *sock,
+				    const void *buf,
+				    size_t len,
+				    int cs);
+static ssize_t socket_impl_writev_cs(struct tskt_socket *sock,
+				     const struct iovec *iov,
+				     size_t iov_len,
+				     int cs);
 static ssize_t socket_impl_writemv(struct tskt_socket *sock,
 				   struct tskt_miovec *miov,
 				   size_t mlen);
@@ -542,6 +550,8 @@ static const struct tskt_socket_ops socket_impl_ops = {
 	.writev = socket_impl_writev,
 #endif
 #ifdef __linux__
+	.write_cs = socket_impl_write_cs,
+	.writev_cs = socket_impl_writev_cs,
 	.writemv = socket_impl_writemv,
 #endif
 	.read_pkt = socket_impl_read_pkt,
@@ -1545,6 +1555,74 @@ static ssize_t socket_impl_writev(struct tskt_socket *sock,
 
 #ifdef __linux__
 
+static ssize_t socket_impl_write_cs(struct tskt_socket *sock,
+				    const void *buf,
+				    size_t len,
+				    int cs)
+{
+	struct iovec iov;
+
+	ULOG_ERRNO_RETURN_ERR_IF(buf == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(len == 0, EINVAL);
+
+	iov.iov_base = (void *)buf;
+	iov.iov_len = len;
+	return socket_impl_writev_cs(sock, &iov, 1, cs);
+}
+
+
+static ssize_t socket_impl_writev_cs(struct tskt_socket *sock,
+				     const struct iovec *iov,
+				     size_t iov_len,
+				     int cs)
+{
+	struct socket_impl *self = (struct socket_impl *)sock;
+	ssize_t writelen = 0;
+	int *tos;
+	struct msghdr msg;
+	memset(&msg, 0, sizeof(msg));
+	char buf[CMSG_SPACE(sizeof(*tos))];
+	struct cmsghdr *chdr;
+
+	ULOG_ERRNO_RETURN_ERR_IF(iov == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(iov_len == 0, EINVAL);
+	/* tcp doesn't support per packet class selector */
+	if (self->is_tcp || cs < 0)
+		return socket_impl_writev(sock, iov, iov_len);
+
+	msg.msg_iov = (struct iovec *)iov;
+	msg.msg_iovlen = iov_len;
+	if (!self->udp.is_connected) {
+		msg.msg_name = &self->udp.remote_addr;
+		msg.msg_namelen = sizeof(self->udp.remote_addr);
+	}
+
+	/* Set class selector in tos field of packet */
+	chdr = (struct cmsghdr *)buf;
+	chdr->cmsg_len = CMSG_LEN(sizeof(*tos));
+	chdr->cmsg_level = IPPROTO_IP;
+	chdr->cmsg_type = IP_TOS;
+	tos = (int *)CMSG_DATA(chdr);
+	*tos = cs;
+	msg.msg_control = chdr;
+	msg.msg_controllen = CMSG_LEN(sizeof(*tos));
+
+	/* Write ignoring interrupts */
+	do {
+		writelen = sendmsg(self->fd, &msg, 0);
+	} while (writelen < 0 && errno == EINTR);
+
+	if (writelen < 0) {
+		int res = -errno;
+		if (res != -EAGAIN)
+			ULOG_ERRNO("sendmsg(fd=%d)", -res, self->fd);
+		return res;
+	}
+
+	return writelen;
+}
+
+
 static ssize_t socket_impl_writemv(struct tskt_socket *sock,
 				   struct tskt_miovec *miov,
 				   size_t mlen)
@@ -2307,7 +2385,6 @@ static int socket_impl_listen(struct tskt_socket *sock,
 	int res;
 
 	ULOG_ERRNO_RETURN_ERR_IF(!self->is_tcp, EOPNOTSUPP);
-	ULOG_ERRNO_RETURN_ERR_IF(local_port == 0, EINVAL);
 
 	/* bind local address and port */
 	res = do_bind(self, local_addr, local_port);

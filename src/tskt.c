@@ -332,6 +332,33 @@ ssize_t tskt_socket_writev(struct tskt_socket *self,
 }
 
 
+ssize_t tskt_socket_write_cs(struct tskt_socket *self,
+			     const void *buf,
+			     size_t len,
+			     int cs)
+{
+	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);
+	if (self->ops->write_cs != NULL)
+		return self->ops->write_cs(self, buf, len, cs);
+	/* Ignore class selector if function is not supported */
+	return self->ops->write(self, buf, len);
+}
+
+
+ssize_t tskt_socket_writev_cs(struct tskt_socket *self,
+			      const struct iovec *iov,
+			      size_t iov_len,
+			      int cs)
+{
+	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(self->ops->writev == NULL, EOPNOTSUPP);
+	if (self->ops->writev_cs != NULL)
+		return self->ops->writev_cs(self, iov, iov_len, cs);
+	/* Ignore class selector if function is not supported */
+	return self->ops->writev(self, iov, iov_len);
+}
+
+
 ssize_t tskt_socket_readmv(struct tskt_socket *self,
 			   struct tskt_miovec *miov,
 			   size_t mlen)

@@ -93,6 +93,14 @@ struct tskt_socket_ops {
 	ssize_t (*writemv)(struct tskt_socket *self,
 			   struct tskt_miovec *miov,
 			   size_t mlen);
+	ssize_t (*write_cs)(struct tskt_socket *self,
+			    const void *buf,
+			    size_t len,
+			    int cs);
+	ssize_t (*writev_cs)(struct tskt_socket *self,
+			     const struct iovec *iov,
+			     size_t iov_len,
+			     int cs);
 	int (*read_pkt)(struct tskt_socket *self, struct tpkt_packet *pkt);
 	int (*read_pkt_alloc)(struct tskt_socket *self,
 			      struct tpkt_packet **ret_pkt);
