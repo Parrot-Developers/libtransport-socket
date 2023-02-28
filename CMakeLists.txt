@@ -18,6 +18,9 @@ target_include_directories(transport-socket PUBLIC
                             $<INSTALL_INTERFACE:include>
 )
 
+# set(OPENSSL_USE_STATIC_LIBS TRUE)
+# find_package(OpenSSL REQUIRED)
+
 target_compile_definitions(transport-socket PRIVATE "TSKT_API_EXPORTS")
 target_compile_definitions(transport-socket PRIVATE "_GNU_SOURCE")
 target_compile_options(transport-socket PRIVATE "-fvisibility=hidden")
@@ -28,4 +31,5 @@ if(WIN32)
   target_link_libraries(transport-socket ws2_32)
 endif()
 
-target_link_libraries(transport-socket futils pomp ulog transport-packet)
+target_link_libraries(transport-socket futils pomp ulog transport-packet rt)
+
