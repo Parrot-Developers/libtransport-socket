@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.15)
-project(libtransport-socket VERSION 1.0)
+project(transport-socket VERSION 1.0)
+
+
+# checks if set up rpath exists for install
+if(COMMAND set_up_rpath)
+    set_up_rpath()
+else()
+    message("Set up rpath not defined!")
+endif()
 
 set(LIB_SOURCES
             src/tskt.c
@@ -9,27 +17,32 @@ set(LIB_SOURCES
             src/tskt_resolv_impl.c
 )
 
-add_library(transport-socket ${LIB_SOURCES})
+add_library(${PROJECT_NAME} ${LIB_SOURCES})
 
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 
-target_include_directories(transport-socket PUBLIC
+target_include_directories(${PROJECT_NAME} PUBLIC
                             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                             $<INSTALL_INTERFACE:include>
 )
 
-# set(OPENSSL_USE_STATIC_LIBS TRUE)
-# find_package(OpenSSL REQUIRED)
 
-target_compile_definitions(transport-socket PRIVATE "TSKT_API_EXPORTS")
-target_compile_definitions(transport-socket PRIVATE "_GNU_SOURCE")
-target_compile_options(transport-socket PRIVATE "-fvisibility=hidden")
-target_compile_options(transport-socket PRIVATE "-std=gnu99")
+target_compile_definitions(${PROJECT_NAME} PRIVATE "TSKT_API_EXPORTS")
+target_compile_definitions(${PROJECT_NAME} PRIVATE "_GNU_SOURCE")
+target_compile_options(${PROJECT_NAME} PRIVATE "-fvisibility=hidden")
+target_compile_options(${PROJECT_NAME} PRIVATE "-std=gnu99")
 
 if(WIN32)
-  target_compile_definitions(transport-socket PRIVATE "_WIN32_WINNT=0x0600")
-  target_link_libraries(transport-socket ws2_32)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE "_WIN32_WINNT=0x0600")
+  target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 futils pomp ulog transport-packet rt)
+else()
+  target_link_libraries(${PROJECT_NAME} PRIVATE futils pomp ulog transport-packet rt)
 endif()
 
-target_link_libraries(transport-socket futils pomp ulog transport-packet rt)
+install(TARGETS ${PROJECT_NAME}
+        EXPORT ${PROJECT_NAME}-targets
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib
+        RUNTIME DESTINATION bin
+        )
 
