@@ -34,7 +34,7 @@ target_compile_options(${PROJECT_NAME} PRIVATE "-std=gnu99")
 
 if(WIN32)
   target_compile_definitions(${PROJECT_NAME} PRIVATE "_WIN32_WINNT=0x0600")
-  target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 futils pomp ulog transport-packet rt)
+  target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 futils pomp ulog transport-packet)
 else()
   target_link_libraries(${PROJECT_NAME} PRIVATE futils pomp ulog transport-packet rt)
 endif()
