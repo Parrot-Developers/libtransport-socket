@@ -1,14 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 project(transport-socket VERSION 1.0)
 
-
-# checks if set up rpath exists for install
-if(COMMAND set_up_rpath)
-    set_up_rpath()
-else()
-    message("Set up rpath not defined!")
-endif()
-
 set(LIB_SOURCES
             src/tskt.c
             src/tskt_impl.c
@@ -18,6 +10,13 @@ set(LIB_SOURCES
 )
 
 add_library(${PROJECT_NAME} ${LIB_SOURCES})
+
+# checks if set up rpath exists for install
+if(COMMAND set_up_rpath)
+    set_up_rpath()
+else()
+    message("Set up rpath not defined!")
+endif()
 
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 set_target_properties(transport-socket PROPERTIES
