@@ -61,7 +61,8 @@ enum tskt_resolv_error {
 	TSKT_RESOLV_ERROR_MEMORY, /**< out of memory. */
 	TSKT_RESOLV_ERROR_NODATA, /**< no address for this host. */
 	TSKT_RESOLV_ERROR_NONAME, /**< unknown host. */
-	TSKT_RESOLV_ERROR_SYTEM, /**< unspecified system error. */
+	TSKT_RESOLV_ERROR_SYSTEM, /**< unspecified system error. */
+	TSKT_RESOLV_ERROR_SYTEM = TSKT_RESOLV_ERROR_SYSTEM,
 };
 
 
@@ -124,6 +125,13 @@ TSKT_API int tskt_resolv_getaddrinfo(struct tskt_resolv *self,
 				     tskt_resolv_cb_t cb,
 				     void *userdata,
 				     int *ret_id);
+
+TSKT_API int tskt_resolv_getaddrinfo6(struct tskt_resolv *self,
+				      const char *hostname,
+				      struct pomp_loop *loop,
+				      tskt_resolv_cb_t cb,
+				      void *userdata,
+				      int *ret_id);
 
 
 /**

@@ -72,12 +72,19 @@ static int resolv_impl_getaddrinfo(struct tskt_resolv *self,
 				   tskt_resolv_cb_t cb,
 				   void *userdata,
 				   int *ret_id);
+static int resolv_impl_getaddrinfo6(struct tskt_resolv *self,
+				    const char *hostname,
+				    struct pomp_loop *loop,
+				    tskt_resolv_cb_t cb,
+				    void *userdata,
+				    int *ret_id);
 static int resolv_impl_cancel(struct tskt_resolv *self, int id);
 
 
 static const struct tskt_resolv_ops resolv_impl_ops = {
 	.destroy = resolv_impl_destroy,
 	.getaddrinfo = resolv_impl_getaddrinfo,
+	.getaddrinfo6 = resolv_impl_getaddrinfo6,
 	.cancel = resolv_impl_cancel,
 };
 
@@ -143,8 +150,9 @@ struct resolv_impl_request {
 	tskt_resolv_cb_t cb;
 	void *userdata;
 	char *hostname;
+	bool is_v6;
 	enum tskt_resolv_error result;
-	char addr[INET_ADDRSTRLEN];
+	char addr[INET6_ADDRSTRLEN];
 	struct list_node node;
 };
 
@@ -168,7 +176,7 @@ static enum tskt_resolv_error get_gai_result(int err)
 	case EAI_SYSTEM:
 #endif
 	default:
-		return TSKT_RESOLV_ERROR_SYTEM;
+		return TSKT_RESOLV_ERROR_SYSTEM;
 	}
 }
 
@@ -203,16 +211,16 @@ static void resolv_idle_cb(void *userdata)
 static void *resolv_impl_thread(void *userdata)
 {
 	struct resolv_impl *self = userdata;
+	struct addrinfo hints;
 
 	ULOGD("thread started");
+
+	memset(&hints, 0, sizeof(hints));
 
 	pthread_mutex_lock(&self->lock);
 	while (true) {
 		struct resolv_impl_request *req;
 		int res;
-		static const struct addrinfo hints = {
-			.ai_family = AF_INET,
-		};
 		struct addrinfo *addr;
 
 		/* Wait for quit signal or pending request */
@@ -231,10 +239,12 @@ static void *resolv_impl_thread(void *userdata)
 		self->current = req;
 		pthread_mutex_unlock(&self->lock);
 
-		ULOGD("request id=%d hostname=\"%s\"\n",
+		ULOGD("request id=%d hostname=\"%s\"%s\n",
 		      req->id,
-		      req->hostname);
+		      req->hostname,
+		      req->is_v6 ? " (v6)" : "");
 
+		hints.ai_family = req->is_v6 ? AF_INET6 : AF_INET;
 		res = getaddrinfo(req->hostname, NULL, &hints, &addr);
 		if (res == 0) {
 			/* XXX TO DO: return more than one address */
@@ -290,16 +300,21 @@ static void *resolv_impl_thread(void *userdata)
 }
 
 
-static int resolv_impl_getaddrinfo(struct tskt_resolv *rslv,
-				   const char *hostname,
-				   struct pomp_loop *loop,
-				   tskt_resolv_cb_t cb,
-				   void *userdata,
-				   int *ret_id)
+static int resolv_impl_getaddrinfo_gen(struct tskt_resolv *rslv,
+				       bool is_v6,
+				       const char *hostname,
+				       struct pomp_loop *loop,
+				       tskt_resolv_cb_t cb,
+				       void *userdata,
+				       int *ret_id)
 {
 	struct resolv_impl *self = (struct resolv_impl *)rslv;
 	struct resolv_impl_request *req;
-	struct in_addr addr;
+	union {
+		struct in_addr in;
+		struct in6_addr in6;
+	} addr;
+	int af = is_v6 ? AF_INET6 : AF_INET;
 	int res = 0;
 
 	/* Create request */
@@ -312,6 +327,7 @@ static int resolv_impl_getaddrinfo(struct tskt_resolv *rslv,
 	req->loop = loop;
 	req->cb = cb;
 	req->userdata = userdata;
+	req->is_v6 = is_v6;
 	pthread_mutex_lock(&self->lock);
 	req->id = self->next_id++;
 	if (req->id == TSKT_RESOLV_INVALID_ID) /* Just in case... */
@@ -319,10 +335,11 @@ static int resolv_impl_getaddrinfo(struct tskt_resolv *rslv,
 	pthread_mutex_unlock(&self->lock);
 
 	/* Check for literal address */
-	if (inet_pton(AF_INET, hostname, &addr) == 1) {
+	if (inet_pton(af, hostname, &addr) == 1) {
 		/* Write back the address in the request */
-		if (inet_ntop(AF_INET, &addr, req->addr, sizeof(req->addr)) ==
-		    NULL) {
+		const char *ret;
+		ret = inet_ntop(af, &addr, req->addr, sizeof(req->addr));
+		if (ret == NULL) {
 			res = -errno;
 			ULOG_ERRNO("inet_ntop", -res);
 			goto error;
@@ -360,6 +377,30 @@ error:
 	/* Failure */
 	free(req);
 	return res;
+}
+
+
+static int resolv_impl_getaddrinfo(struct tskt_resolv *rslv,
+				   const char *hostname,
+				   struct pomp_loop *loop,
+				   tskt_resolv_cb_t cb,
+				   void *userdata,
+				   int *ret_id)
+{
+	return resolv_impl_getaddrinfo_gen(
+		rslv, false, hostname, loop, cb, userdata, ret_id);
+}
+
+
+static int resolv_impl_getaddrinfo6(struct tskt_resolv *rslv,
+				    const char *hostname,
+				    struct pomp_loop *loop,
+				    tskt_resolv_cb_t cb,
+				    void *userdata,
+				    int *ret_id)
+{
+	return resolv_impl_getaddrinfo_gen(
+		rslv, true, hostname, loop, cb, userdata, ret_id);
 }
 
 

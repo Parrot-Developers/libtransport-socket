@@ -40,6 +40,7 @@ ULOG_DECLARE_TAG(tskt_test);
 
 
 #define ADDR_LOCAL "127.0.0.1"
+#define ADDR6_LOCAL "::1"
 #define ADDR_MCAST "239.255.42.1"
 #define BUFFER_SIZE 65536
 
@@ -56,13 +57,14 @@ struct tskt_test {
 	unsigned int count;
 	unsigned int max_count;
 	bool use_pkt;
+	bool use_ipv6;
 };
 
 
 static struct tskt_test *s_self;
 
 
-static const char short_options[] = "ha:m:pc";
+static const char short_options[] = "ha:m:pc6";
 
 
 static const struct option long_options[] = {
@@ -96,6 +98,8 @@ static void usage(char *prog_name)
 	       "Multicast to the provided address (eg. \"239.255.42.1\")\n"
 	       "  -p | --pkt                         "
 	       "Use packet functions\n"
+	       "  -6                                 "
+	       "Use IPv6\n"
 	       "  -c | --connect                     "
 	       "Test connect/disconnect functions\n"
 	       "\n",
@@ -309,22 +313,27 @@ static void sig_handler(int signum)
 }
 
 
-static void test_connect(void)
+static void test_connect(bool use_ipv6)
 {
 	int res;
 	struct tskt_socket *sock = NULL;
 	uint16_t port = 0;
-	char addr[16];
+	char addr[INET6_ADDRSTRLEN];
+	const char *caddr = use_ipv6 ? ADDR6_LOCAL : ADDR_LOCAL;
 
-	res = tskt_socket_new("127.0.0.1",
-			      &port,
-			      NULL,
-			      0,
-			      NULL,
-			      s_self->loop,
-			      NULL,
-			      NULL,
-			      &sock);
+	if (use_ipv6)
+		res = tskt_socket_new_udp6(
+			caddr, &port, NULL, 0, s_self->loop, NULL, NULL, &sock);
+	else
+		res = tskt_socket_new(caddr,
+				      &port,
+				      NULL,
+				      0,
+				      NULL,
+				      s_self->loop,
+				      NULL,
+				      NULL,
+				      &sock);
 	if (res < 0) {
 		ULOG_ERRNO("tskt_socket_new", -res);
 		goto done;
@@ -332,12 +341,12 @@ static void test_connect(void)
 	ULOGI("socket created, port=%u", port);
 
 	port = 9999;
-	res = tskt_socket_connect(sock, NULL, 0, "127.0.0.1", port);
+	res = tskt_socket_connect(sock, NULL, 0, caddr, port);
 	if (res < 0) {
 		ULOG_ERRNO("tskt_socket_connect", -res);
 		goto done;
 	}
-	ULOGI("socket connected to port %u", port);
+	ULOGI("socket connected to %s,%u", caddr, port);
 
 	/* disconnect */
 	ULOGI("disconnect socket:");
@@ -374,6 +383,7 @@ int main(int argc, char **argv)
 	uint16_t receiver_port = 0;
 	s_self = NULL;
 	bool use_pkt = false;
+	bool use_ipv6 = false;
 	bool tstconn = false;
 
 	welcome(argv[0]);
@@ -404,6 +414,10 @@ int main(int argc, char **argv)
 			use_pkt = true;
 			break;
 
+		case '6':
+			use_ipv6 = true;
+			break;
+
 		case 'c':
 			tstconn = true;
 			break;
@@ -416,7 +430,7 @@ int main(int argc, char **argv)
 	}
 
 	if (addr == NULL)
-		addr = ADDR_LOCAL;
+		addr = use_ipv6 ? ADDR6_LOCAL : ADDR_LOCAL;
 	if (maddr == NULL)
 		maddr = ADDR_MCAST;
 
@@ -452,6 +466,7 @@ int main(int argc, char **argv)
 	}
 	s_self->receiver_buf_len = BUFFER_SIZE;
 	s_self->use_pkt = use_pkt;
+	s_self->use_ipv6 = use_ipv6;
 
 	/* Create the loop */
 	s_self->loop = pomp_loop_new();
@@ -464,21 +479,34 @@ int main(int argc, char **argv)
 	if (s_self->use_pkt)
 		printf("Use packet interface\n\n");
 
+	if (s_self->use_ipv6)
+		printf("Use IPv6\n\n");
+
 	if (tstconn) {
-		test_connect();
+		test_connect(use_ipv6);
 		goto out;
 	}
 
 	/* Receiver */
-	res = tskt_socket_new(addr,
-			      &receiver_port,
-			      NULL,
-			      0,
-			      mcast ? maddr : NULL,
-			      s_self->loop,
-			      &receiver_socket_cb,
-			      s_self,
-			      &s_self->receiver);
+	if (s_self->use_ipv6)
+		res = tskt_socket_new_udp6(addr,
+					   &receiver_port,
+					   NULL,
+					   0,
+					   s_self->loop,
+					   &receiver_socket_cb,
+					   s_self,
+					   &s_self->receiver);
+	else
+		res = tskt_socket_new(addr,
+				      &receiver_port,
+				      NULL,
+				      0,
+				      mcast ? maddr : NULL,
+				      s_self->loop,
+				      &receiver_socket_cb,
+				      s_self,
+				      &s_self->receiver);
 	if (res < 0) {
 		ULOG_ERRNO("tskt_socket_new:receiver", -res);
 		status = EXIT_FAILURE;
@@ -486,15 +514,25 @@ int main(int argc, char **argv)
 	}
 
 	/* Sender */
-	res = tskt_socket_new(mcast ? addr : NULL,
-			      NULL,
-			      mcast ? maddr : addr,
-			      receiver_port,
-			      NULL,
-			      s_self->loop,
-			      &sender_socket_cb,
-			      s_self,
-			      &s_self->sender);
+	if (s_self->use_ipv6)
+		res = tskt_socket_new_udp6(NULL,
+					   NULL,
+					   addr,
+					   receiver_port,
+					   s_self->loop,
+					   &sender_socket_cb,
+					   s_self,
+					   &s_self->sender);
+	else
+		res = tskt_socket_new(mcast ? addr : NULL,
+				      NULL,
+				      mcast ? maddr : addr,
+				      receiver_port,
+				      NULL,
+				      s_self->loop,
+				      &sender_socket_cb,
+				      s_self,
+				      &s_self->sender);
 	if (res < 0) {
 		ULOG_ERRNO("tskt_socket_new:sender", -res);
 		status = EXIT_FAILURE;

@@ -171,7 +171,7 @@ static void tcp_listen_server_cb(struct tskt_socket *server_sock,
 {
 	while (1) {
 		struct tskt_socket *sock;
-		char addr[INET_ADDRSTRLEN];
+		char addr[INET6_ADDRSTRLEN];
 		uint16_t port;
 		struct echo_server *echo;
 
@@ -213,15 +213,21 @@ static void tcp_listen_server_cb(struct tskt_socket *server_sock,
 int main(int argc, char **argv)
 {
 	int res;
+	bool is_v6;
 
-	printf("start TCP test server\n");
+	is_v6 = argc > 1 && strcmp(argv[1], "-6") == 0;
+
+	printf("start TCP test server%s\n", is_v6 ? " (IPv6)" : "");
 
 	/* pomp loop */
 	struct pomp_loop *loop = pomp_loop_new();
 
 	/* create tcp socket */
 	struct tskt_socket *sock;
-	res = tskt_socket_new_tcp(loop, &sock);
+	if (is_v6)
+		res = tskt_socket_new_tcp6(loop, &sock);
+	else
+		res = tskt_socket_new_tcp(loop, &sock);
 	if (res < 0) {
 		printf("tskt_socket_new_tcp: %s\n", strerror(-res));
 		return 1;

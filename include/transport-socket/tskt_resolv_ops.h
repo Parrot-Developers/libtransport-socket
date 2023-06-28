@@ -49,6 +49,12 @@ struct tskt_resolv_ops {
 			   tskt_resolv_cb_t cb,
 			   void *userdata,
 			   int *ret_id);
+	int (*getaddrinfo6)(struct tskt_resolv *self,
+			    const char *hostname,
+			    struct pomp_loop *loop,
+			    tskt_resolv_cb_t cb,
+			    void *userdata,
+			    int *ret_id);
 	int (*cancel)(struct tskt_resolv *self, int id);
 };
 

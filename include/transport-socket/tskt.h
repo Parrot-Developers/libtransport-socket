@@ -121,6 +121,15 @@ TSKT_API int tskt_socket_new(const char *local_addr,
 			     void *userdata,
 			     struct tskt_socket **ret_obj);
 
+TSKT_API int tskt_socket_new_udp6(const char *local_addr,
+				  uint16_t *local_port,
+				  const char *remote_addr,
+				  uint16_t remote_port,
+				  struct pomp_loop *loop,
+				  pomp_fd_event_cb_t fd_cb,
+				  void *userdata,
+				  struct tskt_socket **ret_obj);
+
 
 /**
  * Create a TCP socket object.
@@ -135,6 +144,9 @@ TSKT_API int tskt_socket_new(const char *local_addr,
  */
 TSKT_API int tskt_socket_new_tcp(struct pomp_loop *loop,
 				 struct tskt_socket **ret_obj);
+
+TSKT_API int tskt_socket_new_tcp6(struct pomp_loop *loop,
+				  struct tskt_socket **ret_obj);
 
 
 /**

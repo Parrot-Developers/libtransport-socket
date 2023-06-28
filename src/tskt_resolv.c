@@ -85,6 +85,24 @@ int tskt_resolv_getaddrinfo(struct tskt_resolv *self,
 }
 
 
+int tskt_resolv_getaddrinfo6(struct tskt_resolv *self,
+			     const char *hostname,
+			     struct pomp_loop *loop,
+			     tskt_resolv_cb_t cb,
+			     void *userdata,
+			     int *ret_id)
+{
+	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(hostname == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(loop == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(cb == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(self->ops->getaddrinfo6 == NULL, ENOSYS);
+
+	return self->ops->getaddrinfo6(
+		self, hostname, loop, cb, userdata, ret_id);
+}
+
+
 int tskt_resolv_cancel(struct tskt_resolv *self, int id)
 {
 	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);

@@ -46,6 +46,7 @@
 #include <transport-socket/tskt.h>
 
 #define SERVER_TCP_ADDR "127.0.0.1"
+#define SERVER_TCP_ADDR6 "::1"
 #define SERVER_TCP_PORT 11111
 
 #define BYTES_TO_SEND 50000000
@@ -134,14 +135,20 @@ int main(int argc, char **argv)
 {
 	int res;
 	struct client client;
+	bool is_v6;
 
-	printf("start TCP test client\n");
+	is_v6 = argc > 1 && strcmp(argv[1], "-6") == 0;
+
+	printf("start TCP test client%s\n", is_v6 ? " (IPv6)" : "");
 
 	/* pomp loop */
 	struct pomp_loop *loop = pomp_loop_new();
 
 	/* create ctp socket */
-	res = tskt_socket_new_tcp(loop, &client.sock);
+	if (is_v6)
+		res = tskt_socket_new_tcp6(loop, &client.sock);
+	else
+		res = tskt_socket_new_tcp(loop, &client.sock);
 	if (res < 0) {
 		printf("tskt_socket_new_tcp: %s\n", strerror(-res));
 		return 1;
@@ -154,8 +161,11 @@ int main(int argc, char **argv)
 	EVP_DigestInit(client.evp_in, EVP_md5());
 
 	/* connect to server */
-	res = tskt_socket_connect(
-		client.sock, NULL, 0, SERVER_TCP_ADDR, SERVER_TCP_PORT);
+	res = tskt_socket_connect(client.sock,
+				  NULL,
+				  0,
+				  is_v6 ? SERVER_TCP_ADDR6 : SERVER_TCP_ADDR,
+				  SERVER_TCP_PORT);
 	if (res < 0) {
 		printf("tskt_socket_connect: %s\n", strerror(-res));
 		return 1;

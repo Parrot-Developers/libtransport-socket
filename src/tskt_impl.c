@@ -35,13 +35,16 @@
 #ifdef _WIN32
 #	include <winsock2.h>
 #	include <ws2tcpip.h>
+#	include <ws2ipdef.h>
 #	undef OPAQUE
+#	define SOCKERR_ENOTCONN WSAENOTCONN
 #else /* !_WIN32 */
 #	include <arpa/inet.h>
 #	include <netinet/in.h>
 #	include <netinet/tcp.h>
 #	include <sys/mman.h>
 #	include <sys/socket.h>
+#	define SOCKERR_ENOTCONN ENOTCONN
 #endif /* !_WIN32 */
 
 #ifdef __linux__
@@ -57,6 +60,7 @@ ULOG_DECLARE_TAG(tskt_impl);
 
 
 #define ADDR_ANY_STR "0.0.0.0"
+#define ADDR6_ANY_STR "::"
 
 
 #define LISTEN_BACKLOG 8
@@ -128,16 +132,22 @@ static inline int win32_setsockopt(int sockfd,
 #endif /* _WIN32 */
 
 
+union socket_addr {
+	struct sockaddr_in in;
+	struct sockaddr_in6 in6;
+};
+
 struct socket_impl {
 	struct tskt_socket sock;
 	struct pomp_loop *loop;
 	int fd;
 	bool is_tcp;
+	bool is_v6;
 	tskt_socket_event_cb_t cb;
 	void *userdata;
 	union {
 		struct {
-			struct sockaddr_in remote_addr;
+			union socket_addr remote_addr;
 			struct ip_mreq mcast_mreq;
 			struct timespec monotonic_to_real_time_diff;
 			bool ts_failed;
@@ -327,6 +337,49 @@ static int alloc_mmsg(struct socket_impl *self,
 }
 
 #endif /*__linux__ */
+
+
+static int set_addr(struct sockaddr_in *saddr, const char *addr, uint16_t port)
+{
+	int res;
+
+	memset(saddr, 0, sizeof(*saddr));
+	saddr->sin_family = AF_INET;
+	saddr->sin_port = htons(port);
+
+	if (!addr || addr[0] == 0)
+		return 0; /* any address 0.0.0.0 */
+
+	res = inet_pton(AF_INET, addr, &saddr->sin_addr);
+	if (res <= 0) {
+		res = -errno;
+		ULOG_ERRNO("inet_pton", -res);
+		return res;
+	}
+	return 0;
+}
+
+
+static int
+set_addr6(struct sockaddr_in6 *saddr, const char *addr, uint16_t port)
+{
+	int res;
+
+	memset(saddr, 0, sizeof(*saddr));
+	saddr->sin6_family = AF_INET6;
+	saddr->sin6_port = htons(port);
+
+	if (!addr || addr[0] == 0)
+		return 0; /* any address :: */
+
+	res = inet_pton(AF_INET6, addr, &saddr->sin6_addr);
+	if (res <= 0) {
+		res = -errno;
+		ULOG_ERRNO("inet_pton", -res);
+		return res;
+	}
+	return 0;
+}
 
 
 static void socket_impl_fd_cb(int fd, uint32_t revents, void *userdata)
@@ -567,18 +620,28 @@ static const struct tskt_socket_ops socket_impl_ops = {
 };
 
 
-static void
-get_addr(const struct sockaddr_in *addr, char *str, size_t len, uint16_t *port)
+static void get_addr(struct socket_impl *self,
+		     const union socket_addr *addr,
+		     char *str,
+		     size_t len,
+		     uint16_t *port)
 {
-	char buf[INET_ADDRSTRLEN];
+	char buf[INET6_ADDRSTRLEN];
+	const char *ret;
 
 	if (port != NULL)
-		*port = ntohs(addr->sin_port);
+		*port = ntohs(self->is_v6 ? addr->in6.sin6_port
+					  : addr->in.sin_port);
 
 	if (str == NULL || len == 0)
 		return;
 
-	if (inet_ntop(AF_INET, &addr->sin_addr, buf, sizeof(buf)) == NULL) {
+	if (self->is_v6)
+		ret = inet_ntop(
+			AF_INET6, &addr->in6.sin6_addr, buf, sizeof(buf));
+	else
+		ret = inet_ntop(AF_INET, &addr->in.sin_addr, buf, sizeof(buf));
+	if (ret == NULL) {
 		ULOG_ERRNO("inet_ntop", errno);
 		str[0] = '\0';
 		return;
@@ -589,8 +652,8 @@ get_addr(const struct sockaddr_in *addr, char *str, size_t len, uint16_t *port)
 
 static void log_addrs(struct socket_impl *self)
 {
-	char local_addr_str[16];
-	char remote_addr_str[16];
+	char local_addr_str[INET6_ADDRSTRLEN];
+	char remote_addr_str[INET6_ADDRSTRLEN];
 	uint16_t local_port = 0;
 	uint16_t remote_port = 0;
 
@@ -614,13 +677,34 @@ static void log_addrs(struct socket_impl *self)
 }
 
 
-static void set_remote(struct socket_impl *self,
-		       struct sockaddr_in *remote_addr)
+static void set_remote(struct socket_impl *self, union socket_addr *remote_addr)
 {
-	self->udp.remote_addr = *remote_addr;
+	if (self->is_v6)
+		self->udp.remote_addr.in6 = remote_addr->in6;
+	else
+		self->udp.remote_addr.in = remote_addr->in;
 
 	/* Log the addresses and ports for debugging */
 	log_addrs(self);
+}
+
+
+static bool has_remote(struct socket_impl *self)
+{
+	return (self->is_v6 && self->udp.remote_addr.in6.sin6_port != 0) ||
+	       (!self->is_v6 && self->udp.remote_addr.in.sin_port != 0);
+}
+
+
+static bool is_addr_unspecified(struct socket_impl *self,
+				const union socket_addr *addr)
+{
+	return addr == NULL ||
+	       (self->is_v6 &&
+		(addr->in6.sin6_port == 0 ||
+		 IN6_IS_ADDR_UNSPECIFIED(&addr->in6.sin6_addr))) ||
+	       (!self->is_v6 && (addr->in.sin_port == 0 ||
+				 addr->in.sin_addr.s_addr == INADDR_ANY));
 }
 
 
@@ -628,20 +712,18 @@ static int
 do_bind(struct socket_impl *self, const char *local_addr, uint16_t local_port)
 {
 	int res;
-	struct sockaddr_in local;
-	local.sin_family = AF_INET;
-	local.sin_port = htons(local_port);
-	if (local_addr != NULL && local_addr[0] != '\0') {
-		res = inet_pton(AF_INET, local_addr, &local.sin_addr);
-		if (res <= 0) {
-			res = -errno;
-			ULOG_ERRNO("inet_pton", -res);
-			return res;
-		}
-	} else {
-		local.sin_addr.s_addr = INADDR_ANY;
-	}
-	res = bind(self->fd, (const struct sockaddr *)&local, sizeof(local));
+	union socket_addr local;
+
+	if (self->is_v6)
+		res = set_addr6(&local.in6, local_addr, local_port);
+	else
+		res = set_addr(&local.in, local_addr, local_port);
+	if (res < 0)
+		return res;
+
+	res = bind(self->fd,
+		   (const struct sockaddr *)&local,
+		   self->is_v6 ? sizeof(local.in6) : sizeof(local.in));
 	if (res < 0) {
 		res = -errno;
 		ULOG_ERRNO("bind(fd=%d)", -res, self->fd);
@@ -651,31 +733,33 @@ do_bind(struct socket_impl *self, const char *local_addr, uint16_t local_port)
 }
 
 
-int tskt_socket_new(const char *local_addr,
-		    uint16_t *local_port,
-		    const char *remote_addr,
-		    uint16_t remote_port,
-		    const char *mcast_addr,
-		    struct pomp_loop *loop,
-		    pomp_fd_event_cb_t fd_cb,
-		    void *userdata,
-		    struct tskt_socket **ret_obj)
+static int tskt_socket_new_udp(bool is_v6,
+			       const char *local_addr,
+			       uint16_t *local_port,
+			       const char *remote_addr,
+			       uint16_t remote_port,
+			       const char *mcast_addr,
+			       struct pomp_loop *loop,
+			       pomp_fd_event_cb_t fd_cb,
+			       void *userdata,
+			       struct tskt_socket **ret_obj)
 {
 	int res = 0, mcast_addr_first, remote_addr_first, val = 0;
 	struct socket_impl *self;
-	struct sockaddr_in addr;
-	socklen_t addrlen = sizeof(addr);
+	union socket_addr addr;
+	socklen_t addrlen = is_v6 ? sizeof(addr.in6) : sizeof(addr.in);
 	uint16_t l_port = 0;
 
 	ULOG_ERRNO_RETURN_ERR_IF(ret_obj == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(is_v6 && mcast_addr != NULL, EINVAL);
 
 	if (local_addr == NULL || *local_addr == '\0')
-		local_addr = ADDR_ANY_STR;
+		local_addr = is_v6 ? ADDR6_ANY_STR : ADDR_ANY_STR;
 	if (local_port != NULL)
 		l_port = *local_port;
 	if (remote_addr == NULL || *remote_addr == '\0')
-		remote_addr = ADDR_ANY_STR;
-	if (mcast_addr == NULL || *mcast_addr == '\0')
+		remote_addr = is_v6 ? ADDR6_ANY_STR : ADDR_ANY_STR;
+	if (!is_v6 && (mcast_addr == NULL || *mcast_addr == '\0'))
 		mcast_addr = ADDR_ANY_STR;
 
 	self = calloc(1, sizeof(*self));
@@ -686,9 +770,10 @@ int tskt_socket_new(const char *local_addr,
 	}
 	self->sock.ops = &socket_impl_ops;
 	self->loop = loop;
+	self->is_v6 = is_v6;
 
 	/* Create socket */
-	self->fd = socket(AF_INET, SOCK_DGRAM, 0);
+	self->fd = socket(is_v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
 	if (self->fd < 0) {
 		res = -errno;
 		ULOG_ERRNO("socket", -res);
@@ -720,24 +805,26 @@ int tskt_socket_new(const char *local_addr,
 #endif /*__linux__ */
 
 	/* Setup local and remote addresses */
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	res = inet_pton(AF_INET, local_addr, &addr.sin_addr);
-	if (res <= 0) {
-		res = -errno;
-		ULOG_ERRNO("inet_pton", -res);
-		goto error;
+	if (is_v6) {
+		/* IPv6 */
+		res = set_addr6(&addr.in6, local_addr, l_port);
+		if (res < 0)
+			goto error;
+		res = set_addr6(
+			&self->udp.remote_addr.in6, remote_addr, remote_port);
+		if (res < 0)
+			goto error;
+		/* IPv6 multicast not supported */
+		goto retry_bind;
 	}
-	addr.sin_port = htons(l_port);
-	memset(&self->udp.remote_addr, 0, sizeof(self->udp.remote_addr));
-	self->udp.remote_addr.sin_family = AF_INET;
-	res = inet_pton(AF_INET, remote_addr, &self->udp.remote_addr.sin_addr);
-	if (res <= 0) {
-		res = -errno;
-		ULOG_ERRNO("inet_pton", -res);
+
+	/* IPv4 */
+	res = set_addr(&addr.in, local_addr, l_port);
+	if (res < 0)
 		goto error;
-	}
-	self->udp.remote_addr.sin_port = htons(remote_port);
+	res = set_addr(&self->udp.remote_addr.in, remote_addr, remote_port);
+	if (res < 0)
+		goto error;
 
 	mcast_addr_first = atoi(mcast_addr);
 	if ((mcast_addr_first >= 224) && (mcast_addr_first <= 239)) {
@@ -751,8 +838,8 @@ int tskt_socket_new(const char *local_addr,
 			ULOG_ERRNO("inet_pton", -res);
 			goto error;
 		}
-		self->udp.mcast_mreq.imr_interface = addr.sin_addr;
-		addr.sin_addr = self->udp.mcast_mreq.imr_multiaddr;
+		self->udp.mcast_mreq.imr_interface = addr.in.sin_addr;
+		addr.in.sin_addr = self->udp.mcast_mreq.imr_multiaddr;
 		if (setsockopt(self->fd,
 			       IPPROTO_IP,
 			       IP_ADD_MEMBERSHIP,
@@ -781,7 +868,7 @@ int tskt_socket_new(const char *local_addr,
 
 	remote_addr_first = atoi(remote_addr);
 	if ((remote_addr_first >= 224) && (remote_addr_first <= 239) &&
-	    (addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK))) {
+	    (addr.in.sin_addr.s_addr == htonl(INADDR_LOOPBACK))) {
 		/* Sending to a multicast address on localhost,
 		 * set the local loop option */
 		val = 1;
@@ -801,10 +888,11 @@ int tskt_socket_new(const char *local_addr,
 
 	/* Bind to local address */
 retry_bind:
-	if (bind(self->fd, (const struct sockaddr *)&addr, sizeof(addr)) < 0) {
+	if (bind(self->fd, (const struct sockaddr *)&addr, addrlen) < 0) {
 		res = -errno;
-		if ((res == -EADDRINUSE) && (addr.sin_port != 0)) {
-			addr.sin_port = 0;
+		if ((res == -EADDRINUSE) && !is_v6 && (addr.in.sin_port != 0)) {
+			/* XXX this is crappy behaviour */
+			addr.in.sin_port = 0;
 			goto retry_bind;
 		}
 		ULOG_ERRNO("bind(fd=%d)", -res, self->fd);
@@ -818,7 +906,8 @@ retry_bind:
 			ULOG_ERRNO("getsockname(fd=%d)", -res, self->fd);
 			goto error;
 		}
-		*local_port = ntohs(addr.sin_port);
+		*local_port =
+			ntohs(is_v6 ? addr.in6.sin6_port : addr.in.sin_port);
 	}
 
 	/* Log the addresses and ports for debugging */
@@ -851,7 +940,53 @@ error:
 }
 
 
+int tskt_socket_new(const char *local_addr,
+		    uint16_t *local_port,
+		    const char *remote_addr,
+		    uint16_t remote_port,
+		    const char *mcast_addr,
+		    struct pomp_loop *loop,
+		    pomp_fd_event_cb_t fd_cb,
+		    void *userdata,
+		    struct tskt_socket **ret_obj)
+{
+	return tskt_socket_new_udp(false,
+				   local_addr,
+				   local_port,
+				   remote_addr,
+				   remote_port,
+				   mcast_addr,
+				   loop,
+				   fd_cb,
+				   userdata,
+				   ret_obj);
+}
+
+
+int tskt_socket_new_udp6(const char *local_addr,
+			 uint16_t *local_port,
+			 const char *remote_addr,
+			 uint16_t remote_port,
+			 struct pomp_loop *loop,
+			 pomp_fd_event_cb_t fd_cb,
+			 void *userdata,
+			 struct tskt_socket **ret_obj)
+{
+	return tskt_socket_new_udp(true,
+				   local_addr,
+				   local_port,
+				   remote_addr,
+				   remote_port,
+				   NULL,
+				   loop,
+				   fd_cb,
+				   userdata,
+				   ret_obj);
+}
+
+
 static int tskt_socket_new_tcp0(int fd,
+				bool is_v6,
 				struct pomp_loop *loop,
 				struct tskt_socket **ret_obj)
 {
@@ -868,13 +1003,14 @@ static int tskt_socket_new_tcp0(int fd,
 	self->sock.ops = &socket_impl_ops;
 	self->loop = loop;
 	self->is_tcp = true;
+	self->is_v6 = is_v6;
 
 	if (fd >= 0) {
 		/* Use existing socket */
 		self->fd = fd;
 	} else {
 		/* Create new socket */
-		self->fd = socket(AF_INET, SOCK_STREAM, 0);
+		self->fd = socket(is_v6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
 		if (self->fd < 0) {
 			res = -errno;
 			ULOG_ERRNO("socket", -res);
@@ -942,7 +1078,17 @@ int tskt_socket_new_tcp(struct pomp_loop *loop, struct tskt_socket **ret_obj)
 	ULOG_ERRNO_RETURN_ERR_IF(ret_obj == NULL, EINVAL);
 
 	/* create new TCP socket object */
-	return tskt_socket_new_tcp0(-1, loop, ret_obj);
+	return tskt_socket_new_tcp0(-1, false, loop, ret_obj);
+}
+
+
+int tskt_socket_new_tcp6(struct pomp_loop *loop, struct tskt_socket **ret_obj)
+{
+	ULOG_ERRNO_RETURN_ERR_IF(loop == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(ret_obj == NULL, EINVAL);
+
+	/* create new TCP socket object */
+	return tskt_socket_new_tcp0(-1, true, loop, ret_obj);
 }
 
 
@@ -1046,10 +1192,13 @@ static int socket_impl_get_local_addr(struct tskt_socket *sock,
 {
 	struct socket_impl *self = (struct socket_impl *)sock;
 	int res;
-	struct sockaddr_in addr;
+	union socket_addr addr;
 
 	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);
-	ULOG_ERRNO_RETURN_ERR_IF(str != NULL && len < 16, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(
+		str != NULL && ((self->is_v6 && len < INET6_ADDRSTRLEN) ||
+				(!self->is_v6 && len < INET_ADDRSTRLEN)),
+		EINVAL);
 
 	socklen_t slen = sizeof(addr);
 	res = getsockname(self->fd, (struct sockaddr *)&addr, &slen);
@@ -1059,7 +1208,7 @@ static int socket_impl_get_local_addr(struct tskt_socket *sock,
 		return res;
 	}
 
-	get_addr(&addr, str, len, port);
+	get_addr(self, &addr, str, len, port);
 
 	return 0;
 }
@@ -1072,31 +1221,41 @@ static int socket_impl_get_remote_addr(struct tskt_socket *sock,
 {
 	struct socket_impl *self = (struct socket_impl *)sock;
 	int res;
-	struct sockaddr_in addr;
+	union socket_addr addr;
 
 	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);
-	ULOG_ERRNO_RETURN_ERR_IF(str != NULL && len < 16, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(
+		str != NULL && ((self->is_v6 && len < INET6_ADDRSTRLEN) ||
+				(!self->is_v6 && len < INET_ADDRSTRLEN)),
+		EINVAL);
 
 	if (self->is_tcp) {
 		socklen_t slen = sizeof(addr);
 		res = getpeername(self->fd, (struct sockaddr *)&addr, &slen);
 		if (res < 0) {
-			if (errno != ENOTCONN) {
+			if (errno != SOCKERR_ENOTCONN) {
 				res = -errno;
 				ULOG_ERRNO("getpeername", -res);
 				return res;
 			}
 			/* Socket is not connected,
 			 * return 0.0.0.0:0 address */
-			addr.sin_family = AF_INET;
-			addr.sin_port = 0;
-			addr.sin_addr.s_addr = 0;
+			if (self->is_v6) {
+				memset(&addr.in6, 0, sizeof(addr.in6));
+				addr.in6.sin6_family = AF_INET6;
+			} else {
+				addr.in.sin_family = AF_INET;
+				addr.in.sin_port = 0;
+				addr.in.sin_addr.s_addr = 0;
+			}
 		}
+	} else if (self->is_v6) {
+		addr.in6 = self->udp.remote_addr.in6;
 	} else {
-		addr = self->udp.remote_addr;
+		addr.in = self->udp.remote_addr.in;
 	}
 
-	get_addr(&addr, str, len, port);
+	get_addr(self, &addr, str, len, port);
 
 	return 0;
 }
@@ -1108,7 +1267,7 @@ static int socket_impl_set_remote_addr(struct tskt_socket *sock,
 {
 	struct socket_impl *self = (struct socket_impl *)sock;
 	int res;
-	struct sockaddr_in remote_addr;
+	union socket_addr remote_addr;
 
 	ULOG_ERRNO_RETURN_ERR_IF(self->is_tcp, EOPNOTSUPP);
 	ULOG_ERRNO_RETURN_ERR_IF(addr == NULL, EINVAL);
@@ -1116,15 +1275,12 @@ static int socket_impl_set_remote_addr(struct tskt_socket *sock,
 	ULOG_ERRNO_RETURN_ERR_IF(port == 0, EINVAL);
 	ULOG_ERRNO_RETURN_ERR_IF(self->udp.is_connected, EISCONN);
 
-	memset(&remote_addr, 0, sizeof(remote_addr));
-	remote_addr.sin_family = AF_INET;
-	res = inet_pton(AF_INET, addr, &remote_addr.sin_addr);
-	if (res <= 0) {
-		res = -errno;
-		ULOG_ERRNO("inet_pton", -res);
+	if (self->is_v6)
+		res = set_addr6(&remote_addr.in6, addr, port);
+	else
+		res = set_addr(&remote_addr.in, addr, port);
+	if (res < 0)
 		return res;
-	}
-	remote_addr.sin_port = htons(port);
 
 	set_remote(self, &remote_addr);
 
@@ -1281,7 +1437,7 @@ static ssize_t socket_impl_read(struct tskt_socket *sock,
 	int res;
 	DWORD readlen = 0, flags = 0;
 	WSABUF wsabuf;
-	struct sockaddr_in remote_addr;
+	union socket_addr remote_addr;
 	int addr_len = sizeof(remote_addr);
 	struct timespec ts_cur = {0, 0};
 
@@ -1338,7 +1494,7 @@ static ssize_t socket_impl_read(struct tskt_socket *sock,
 	time_timespec_to_us(&ts_cur, ts_us);
 
 done:
-	if (self->udp.remote_addr.sin_port == 0)
+	if (!has_remote(self))
 		set_remote(self, &remote_addr);
 
 	return readlen;
@@ -1377,7 +1533,7 @@ static ssize_t socket_impl_readv(struct tskt_socket *sock,
 #	ifdef __linux__
 	union cmsg_buffer control;
 #	endif /*__linux__ */
-	struct sockaddr_in remote_addr;
+	union socket_addr remote_addr;
 	memset(&msg, 0, sizeof(msg));
 
 	ULOG_ERRNO_RETURN_ERR_IF(iov == NULL, EINVAL);
@@ -1436,7 +1592,7 @@ static ssize_t socket_impl_readv(struct tskt_socket *sock,
 #	endif /*__linux__ */
 
 done:
-	if (self->udp.remote_addr.sin_port == 0)
+	if (!has_remote(self))
 		set_remote(self, &remote_addr);
 
 	return readlen;
@@ -1705,8 +1861,9 @@ static int socket_impl_read_pkt(struct tskt_socket *sock,
 	DWORD readlen = 0, flags = 0;
 	LPWSABUF wsabufs = NULL;
 	size_t wsabuf_count = 0;
-	struct sockaddr_in *remote_addr = NULL;
-	int addr_len = sizeof(*remote_addr);
+	void *remote_addr = NULL;
+	int addr_len = self->is_v6 ? sizeof(struct sockaddr_in6)
+				   : sizeof(struct sockaddr_in);
 	struct timespec ts_cur = {0, 0};
 	uint64_t timestamp = 0;
 
@@ -1735,7 +1892,8 @@ static int socket_impl_read_pkt(struct tskt_socket *sock,
 			      NULL,
 			      NULL);
 	} else {
-		remote_addr = tpkt_get_addr(pkt);
+		remote_addr = self->is_v6 ? (void *)tpkt_get_addr6(pkt)
+					  : (void *)tpkt_get_addr(pkt);
 		if (remote_addr == NULL) {
 			res = -EPROTO;
 			ULOG_ERRNO("tpkt_get_addr", -res);
@@ -1776,7 +1934,7 @@ static int socket_impl_read_pkt(struct tskt_socket *sock,
 	if (res < 0)
 		ULOG_ERRNO("tpkt_set_timestamp", -res);
 
-	if ((self->udp.remote_addr.sin_port == 0) && (remote_addr != NULL))
+	if (!has_remote(self) && (remote_addr != NULL))
 		set_remote(self, remote_addr);
 
 done:
@@ -1794,7 +1952,7 @@ static int socket_impl_read_pkt(struct tskt_socket *sock,
 	int res;
 	ssize_t readlen = 0;
 	struct msghdr msg;
-	struct sockaddr_in *remote_addr = NULL;
+	void *remote_addr = NULL;
 #	ifdef __linux__
 	union cmsg_buffer control;
 #	endif /*__linux__ */
@@ -1822,14 +1980,16 @@ static int socket_impl_read_pkt(struct tskt_socket *sock,
 		msg.msg_control = &control;
 		msg.msg_controllen = sizeof(control);
 #	endif /*__linux__ */
-		remote_addr = tpkt_get_addr(pkt);
+		remote_addr = self->is_v6 ? (void *)tpkt_get_addr6(pkt)
+					  : (void *)tpkt_get_addr(pkt);
 		if (remote_addr == NULL) {
 			res = -EPROTO;
 			ULOG_ERRNO("tpkt_get_addr", -res);
 			return res;
 		}
 		msg.msg_name = remote_addr;
-		msg.msg_namelen = sizeof(*remote_addr);
+		msg.msg_namelen = self->is_v6 ? sizeof(struct sockaddr_in6)
+					      : sizeof(struct sockaddr_in);
 	}
 
 	/* Read data, ignoring interrupts */
@@ -1867,8 +2027,8 @@ static int socket_impl_read_pkt(struct tskt_socket *sock,
 	if (res < 0)
 		ULOG_ERRNO("tpkt_set_timestamp", -res);
 
-	if ((self->udp.remote_addr.sin_port == 0) && (remote_addr != NULL))
-		set_remote(self, remote_addr);
+	if (!has_remote(self) && (remote_addr != NULL))
+		set_remote(self, (union socket_addr *)remote_addr);
 
 done:
 	return 0;
@@ -1912,16 +2072,10 @@ static int socket_impl_write_pkt(struct tskt_socket *sock,
 			      NULL,
 			      NULL);
 	} else {
-		struct sockaddr_in *pkt_addr = tpkt_get_addr(pkt);
-		const struct sockaddr_in *addr = &self->udp.remote_addr;
-		if (pkt_addr == NULL) {
-			res = -EPROTO;
-			ULOG_ERRNO("tpkt_get_addr", -res);
-			return res;
-		}
-		if ((pkt_addr != NULL) &&
-		    (pkt_addr->sin_addr.s_addr != htonl(INADDR_ANY)) &&
-		    (pkt_addr->sin_port != 0)) {
+		void *pkt_addr = self->is_v6 ? (void *)tpkt_get_addr6(pkt)
+					     : (void *)tpkt_get_addr(pkt);
+		void *addr = (void *)&self->udp.remote_addr;
+		if (!is_addr_unspecified(self, pkt_addr)) {
 			/* Send to the address associated with the packet if
 			 * specified, otherwise the socket remote address is
 			 * used */
@@ -1935,7 +2089,8 @@ static int socket_impl_write_pkt(struct tskt_socket *sock,
 				&writelen,
 				0,
 				(const struct sockaddr *)addr,
-				sizeof(*addr),
+				self->is_v6 ? sizeof(struct sockaddr_in6)
+					    : sizeof(struct sockaddr_in),
 				NULL,
 				NULL);
 	}
@@ -1991,7 +2146,6 @@ static int socket_impl_write_pkt(struct tskt_socket *sock,
 	int res;
 	ssize_t writelen = 0;
 	size_t len = 0;
-	struct sockaddr_in *remote_addr = NULL;
 	struct msghdr msg;
 	memset(&msg, 0, sizeof(msg));
 
@@ -2009,24 +2163,18 @@ static int socket_impl_write_pkt(struct tskt_socket *sock,
 		return res;
 	}
 	if (!self->is_tcp && !self->udp.is_connected) {
-		remote_addr = tpkt_get_addr(pkt);
-		if (remote_addr == NULL) {
-			res = -EPROTO;
-			ULOG_ERRNO("tpkt_get_addr", -res);
-			return res;
-		}
-		if ((remote_addr != NULL) &&
-		    (remote_addr->sin_addr.s_addr != htonl(INADDR_ANY)) &&
-		    (remote_addr->sin_port != 0)) {
+		void *pkt_addr = self->is_v6 ? (void *)tpkt_get_addr6(pkt)
+					     : (void *)tpkt_get_addr(pkt);
+		if (!is_addr_unspecified(self, pkt_addr)) {
 			/* Send to the address associated with the packet
 			 * if specified */
-			msg.msg_name = remote_addr;
-			msg.msg_namelen = sizeof(*remote_addr);
+			msg.msg_name = pkt_addr;
 		} else {
 			/* Otherwise send to the socket remote address */
 			msg.msg_name = &self->udp.remote_addr;
-			msg.msg_namelen = sizeof(self->udp.remote_addr);
 		}
+		msg.msg_namelen = self->is_v6 ? sizeof(struct sockaddr_in6)
+					      : sizeof(struct sockaddr_in);
 	}
 
 	/* Write ignoring interrupts */
@@ -2182,7 +2330,7 @@ static ssize_t socket_impl_read_pkt_list(struct tskt_socket *sock,
 			if (res < 0)
 				ULOG_ERRNO("tpkt_set_timestamp", -res);
 
-			if ((self->udp.remote_addr.sin_port == 0) &&
+			if (!has_remote(self) &&
 			    (mmsg[i].msg_hdr.msg_name != NULL))
 				set_remote(self, mmsg[i].msg_hdr.msg_name);
 		}
@@ -2296,7 +2444,7 @@ static int socket_impl_connect(struct tskt_socket *sock,
 			       uint16_t remote_port)
 {
 	struct socket_impl *self = (struct socket_impl *)sock;
-	struct sockaddr_in remote;
+	union socket_addr remote;
 	int res;
 
 	if (self->is_tcp) {
@@ -2318,29 +2466,39 @@ static int socket_impl_connect(struct tskt_socket *sock,
 	}
 
 	/* connect to remote */
-	remote.sin_family = AF_INET;
 	if (remote_addr != NULL && remote_addr[0] != '\0') {
-		remote.sin_port = htons(remote_port);
-		res = inet_pton(AF_INET, remote_addr, &remote.sin_addr);
-		if (res <= 0) {
-			res = -errno;
-			ULOG_ERRNO("inet_pton", -res);
+		if (self->is_v6)
+			res = set_addr6(&remote.in6, remote_addr, remote_port);
+		else
+			res = set_addr(&remote.in, remote_addr, remote_port);
+		if (res < 0)
 			return res;
-		}
 	} else {
 		/* disconnect socket */
 		if (!self->udp.is_connected)
 			return 0;
-#ifdef __linux__
 		/* On Linux we have to set an unspecified address
 		 * to remove the association */
-		remote.sin_family = AF_UNSPEC;
+		if (self->is_v6) {
+			memset(&remote.in6, 0, sizeof(remote.in6));
+#ifdef __linux__
+			remote.in6.sin6_family = AF_UNSPEC;
+#else
+			remote.in6.sin6_family = AF_INET6;
 #endif
-		remote.sin_addr.s_addr = 0;
-		remote.sin_port = 0;
+		} else {
+#ifdef __linux__
+			remote.in.sin_family = AF_UNSPEC;
+#else
+			remote.in.sin_family = AF_INET;
+#endif
+			remote.in.sin_addr.s_addr = 0;
+			remote.in.sin_port = 0;
+		}
 	}
-	res = connect(
-		self->fd, (const struct sockaddr *)&remote, sizeof(remote));
+	res = connect(self->fd,
+		      (const struct sockaddr *)&remote,
+		      self->is_v6 ? sizeof(remote.in6) : sizeof(remote.in));
 	if (res < 0) {
 		res = -errno;
 #ifdef _WIN32
@@ -2354,7 +2512,7 @@ static int socket_impl_connect(struct tskt_socket *sock,
 		return res;
 	}
 	if (!self->is_tcp) {
-		self->udp.is_connected = remote.sin_addr.s_addr != 0;
+		self->udp.is_connected = !is_addr_unspecified(self, &remote);
 		set_remote(self, &remote);
 		return 0;
 	}
@@ -2422,13 +2580,16 @@ static int socket_impl_accept(struct tskt_socket *sock,
 			      struct tskt_socket **ret_obj)
 {
 	struct socket_impl *self = (struct socket_impl *)sock;
-	struct sockaddr_in remote;
+	union socket_addr remote;
 	socklen_t slen = sizeof(remote);
 	int res, fd;
 
 	ULOG_ERRNO_RETURN_ERR_IF(!self->is_tcp, EOPNOTSUPP);
-	ULOG_ERRNO_RETURN_ERR_IF(remote_addr != NULL && remote_len < 16,
-				 EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(
+		remote_addr != NULL &&
+			((self->is_v6 && remote_len < INET6_ADDRSTRLEN) ||
+			 (!self->is_v6 && remote_len < INET_ADDRSTRLEN)),
+		EINVAL);
 	ULOG_ERRNO_RETURN_ERR_IF(ret_obj == NULL, EINVAL);
 
 	/* accept connect */
@@ -2445,7 +2606,7 @@ static int socket_impl_accept(struct tskt_socket *sock,
 	}
 
 	/* create new socket object */
-	res = tskt_socket_new_tcp0(fd, self->loop, ret_obj);
+	res = tskt_socket_new_tcp0(fd, self->is_v6, self->loop, ret_obj);
 	if (res < 0) {
 		/* failed to create socket object, send TCP RESET
 		 * to peer to report the error */
@@ -2466,7 +2627,7 @@ static int socket_impl_accept(struct tskt_socket *sock,
 	log_addrs((struct socket_impl *)(*ret_obj));
 
 	/* return remote address */
-	get_addr(&remote, remote_addr, remote_len, remote_port);
+	get_addr(self, &remote, remote_addr, remote_len, remote_port);
 
 	return 0;
 }

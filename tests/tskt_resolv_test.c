@@ -18,15 +18,22 @@
 
 static const struct {
 	const char *hostname;
+	bool ipv6;
 	bool cancel;
 } requests[] = {
-	{"10.1.0.1", false},
-	{"10.1.0.2", true},
-	{"www.google.com", false},
-	{"truc.pouet", false},
-	{"www.google.fr", true},
-	{"www.parrot.com", false},
-	{"www.google.fr", false},
+	{"10.1.0.1", false, false},
+	{"10.1.0.2", false, true},
+	{"www.google.com", false, false},
+	{"truc.pouet", false, false},
+	{"www.google.fr", false, true},
+	{"www.parrot.com", false, false},
+	{"www.google.fr", false, false},
+	{"2a00:1450:4007:81a::2001", true, false},
+	{"www.google.com", true, false},
+	{"truc.pouet", true, false},
+	{"www.google.fr", true, false},
+	{"www.parrot.com", true, false},
+	{"drones.starfish.parrot.com", true, false},
 };
 
 
@@ -89,17 +96,28 @@ int main(int argc, char **argv)
 
 	/* Start requests */
 	for (unsigned i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
-		ret = tskt_resolv_getaddrinfo(rslv,
-					      requests[i].hostname,
-					      loop,
-					      rslv_cb,
-					      (void *)requests[i].hostname,
-					      &id);
-		printf("request: hostname=\"%s\", ret=%d, id=%d\n",
+		if (requests[i].ipv6)
+			ret = tskt_resolv_getaddrinfo6(
+				rslv,
+				requests[i].hostname,
+				loop,
+				rslv_cb,
+				(void *)requests[i].hostname,
+				&id);
+		else
+			ret = tskt_resolv_getaddrinfo(
+				rslv,
+				requests[i].hostname,
+				loop,
+				rslv_cb,
+				(void *)requests[i].hostname,
+				&id);
+		printf("request: hostname=\"%s\"%s, ret=%d, id=%d\n",
 		       requests[i].hostname,
+		       requests[i].ipv6 ? " (IPv6)" : "",
 		       ret,
 		       id);
-		if (requests[i].cancel) {
+		if (ret >= 0 && requests[i].cancel) {
 			printf("  -> cancelled!\n");
 			ret = tskt_resolv_cancel(rslv, id);
 			if (ret < 0)
