@@ -25,6 +25,7 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <transport-socket/tskt_pomp.h>
 
 #define ULOG_TAG tskt_pomp
@@ -248,7 +249,11 @@ int tskt_pomp_send_msg(struct tskt_pomp *self, const struct pomp_msg *msg)
 	}
 	if (wlen < 0) {
 		/* socket error */
+#if SIZE_WIDTH > INT_WIDTH
+		self->sock_error = (wlen >= INT_MIN) ? (int)wlen : -EPROTO;
+#else
 		self->sock_error = (int)wlen;
+#endif
 		return self->sock_error;
 	}
 

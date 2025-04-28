@@ -52,7 +52,14 @@ extern "C" {
 
 /* Forward declarations */
 struct tskt_socket;
+#ifdef _WIN32
+struct iovec {
+	void *iov_base;
+	size_t iov_len;
+};
+#else
 struct iovec;
+#endif
 
 
 /** Default receive packet max size. */

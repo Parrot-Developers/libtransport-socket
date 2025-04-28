@@ -38,6 +38,11 @@
 #	include <ws2ipdef.h>
 #	undef OPAQUE
 #	define SOCKERR_ENOTCONN WSAENOTCONN
+/* Use same values as Linux/Posix */
+#	undef INET_ADDRSTRLEN
+#	define INET_ADDRSTRLEN 16
+#	undef INET6_ADDRSTRLEN
+#	define INET6_ADDRSTRLEN 46
 #else /* !_WIN32 */
 #	include <arpa/inet.h>
 #	include <netinet/in.h>
@@ -72,6 +77,8 @@ ULOG_DECLARE_TAG(tskt_impl);
 
 
 #ifdef _WIN32
+
+#	define IOV_MAX 8
 
 static inline int win32_socket(int domain, int type, int protocol)
 {
@@ -164,6 +171,7 @@ struct socket_impl {
 #ifdef __linux__
 	void *mmsg;
 #endif
+	bool netdown_logged;
 };
 
 
@@ -538,10 +546,10 @@ static ssize_t socket_impl_readv(struct tskt_socket *sock,
 				 const struct iovec *iov,
 				 size_t iov_len,
 				 uint64_t *ts_us);
+#endif
 static ssize_t socket_impl_writev(struct tskt_socket *sock,
 				  const struct iovec *iov,
 				  size_t iov_len);
-#endif
 #ifdef __linux__
 static ssize_t socket_impl_write_cs(struct tskt_socket *sock,
 				    const void *buf,
@@ -600,8 +608,8 @@ static const struct tskt_socket_ops socket_impl_ops = {
 	.write = socket_impl_write,
 #ifndef _WIN32
 	.readv = socket_impl_readv,
-	.writev = socket_impl_writev,
 #endif
+	.writev = socket_impl_writev,
 #ifdef __linux__
 	.write_cs = socket_impl_write_cs,
 	.writev_cs = socket_impl_writev_cs,
@@ -825,6 +833,14 @@ static int tskt_socket_new_udp(bool is_v6,
 	res = set_addr(&self->udp.remote_addr.in, remote_addr, remote_port);
 	if (res < 0)
 		goto error;
+#ifdef _WIN32
+	if (remote_port != 0 && self->udp.remote_addr.in.sin_addr.s_addr == 0) {
+		/* Linux treats 0.0.0.0 as local address but not Windows,
+		 * replace with loopback */
+		self->udp.remote_addr.in.sin_addr.s_addr =
+			htonl(INADDR_LOOPBACK);
+	}
+#endif
 
 	mcast_addr_first = atoi(mcast_addr);
 	if ((mcast_addr_first >= 224) && (mcast_addr_first <= 239)) {
@@ -1601,18 +1617,33 @@ done:
 #endif /* _WIN32 */
 
 
-#ifdef _WIN32
-
 static ssize_t
 socket_impl_write(struct tskt_socket *sock, const void *buf, size_t len)
+{
+	struct iovec iov;
+
+	ULOG_ERRNO_RETURN_ERR_IF(buf == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(len == 0, EINVAL);
+
+	iov.iov_base = (void *)buf;
+	iov.iov_len = len;
+	return socket_impl_writev(sock, &iov, 1);
+}
+
+
+#ifdef _WIN32
+
+static ssize_t socket_impl_writev(struct tskt_socket *sock,
+				  const struct iovec *iov,
+				  size_t iov_len)
 {
 	struct socket_impl *self = (struct socket_impl *)sock;
 	int res;
 	DWORD writelen = 0;
-	WSABUF wsabuf;
+	WSABUF wsabuf[IOV_MAX];
 
-	ULOG_ERRNO_RETURN_ERR_IF(buf == NULL, EINVAL);
-	ULOG_ERRNO_RETURN_ERR_IF(len == 0, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(iov == NULL, EINVAL);
+	ULOG_ERRNO_RETURN_ERR_IF(iov_len == 0 || iov_len > IOV_MAX, EINVAL);
 	if (self->is_tcp) {
 		ULOG_ERRNO_RETURN_ERR_IF(self->tcp.werror != 0,
 					 -self->tcp.werror);
@@ -1621,15 +1652,22 @@ socket_impl_write(struct tskt_socket *sock, const void *buf, size_t len)
 	}
 
 	/* Write data */
-	wsabuf.buf = (void *)buf;
-	wsabuf.len = (ULONG)len;
+	for (size_t i = 0; i < iov_len; i++) {
+		wsabuf[i].buf = iov[i].iov_base;
+		wsabuf[i].len = (ULONG)iov[i].iov_len;
+	}
 	if (self->is_tcp || self->udp.is_connected)
-		res = WSASend(
-			(SOCKET)self->fd, &wsabuf, 1, &writelen, 0, NULL, NULL);
+		res = WSASend((SOCKET)self->fd,
+			      wsabuf,
+			      iov_len,
+			      &writelen,
+			      0,
+			      NULL,
+			      NULL);
 	else
 		res = WSASendTo((SOCKET)self->fd,
-				&wsabuf,
-				1,
+				wsabuf,
+				iov_len,
 				&writelen,
 				0,
 				(const struct sockaddr *)&self->udp.remote_addr,
@@ -1650,20 +1688,6 @@ socket_impl_write(struct tskt_socket *sock, const void *buf, size_t len)
 
 
 #else /* _WIN32 */
-
-
-static ssize_t
-socket_impl_write(struct tskt_socket *sock, const void *buf, size_t len)
-{
-	struct iovec iov;
-
-	ULOG_ERRNO_RETURN_ERR_IF(buf == NULL, EINVAL);
-	ULOG_ERRNO_RETURN_ERR_IF(len == 0, EINVAL);
-
-	iov.iov_base = (void *)buf;
-	iov.iov_len = len;
-	return socket_impl_writev(sock, &iov, 1);
-}
 
 
 static ssize_t socket_impl_writev(struct tskt_socket *sock,
@@ -2184,10 +2208,26 @@ static int socket_impl_write_pkt(struct tskt_socket *sock,
 
 	if (writelen < 0) {
 		res = -errno;
-		if (res != -EAGAIN)
-			ULOG_ERRNO("sendmsg(fd=%d)", -res, self->fd);
+		if (res != -EAGAIN) {
+			if (res == -ENETUNREACH || res == -ENETDOWN) {
+				if (!self->netdown_logged) {
+					ULOG_ERRNO(
+						"sendmsg(fd=%d) "
+						"(logged only once)",
+						-res,
+						self->fd);
+					self->netdown_logged = true;
+				}
+			} else {
+				ULOG_ERRNO("sendmsg(fd=%d)", -res, self->fd);
+				self->netdown_logged = false;
+			}
+		} else {
+			self->netdown_logged = false;
+		}
 		return res;
 	}
+	self->netdown_logged = false;
 
 	/* Check the written size */
 	res = tpkt_get_cdata(pkt, NULL, &len, NULL);
@@ -2394,8 +2434,11 @@ static int socket_impl_set_event_cb(struct tskt_socket *sock,
 	if (cb != NULL) {
 		/* Start monitoring */
 		events &= POMP_FD_EVENT_IN | POMP_FD_EVENT_OUT;
-		res = pomp_loop_add(
-			self->loop, self->fd, events, socket_impl_fd_cb, self);
+		res = pomp_loop_add(self->loop,
+				    self->fd,
+				    POMP_FD_EVENT_ERR | events,
+				    socket_impl_fd_cb,
+				    self);
 		if (res < 0) {
 			ULOG_ERRNO("pomp_loop_add(fd=%d)", -res, self->fd);
 			return res;

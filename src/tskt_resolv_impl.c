@@ -39,6 +39,10 @@
 #	include <netinet/in.h>
 #endif /* !_WIN32 */
 
+#if defined(__APPLE__)
+#	include <TargetConditionals.h>
+#endif
+
 #define ULOG_TAG tskt_resolv_impl
 #include <ulog.h>
 ULOG_DECLARE_TAG(tskt_resolv_impl);
@@ -214,6 +218,18 @@ static void *resolv_impl_thread(void *userdata)
 	struct addrinfo hints;
 
 	ULOGD("thread started");
+
+#if defined(__APPLE__)
+#	if !TARGET_OS_IPHONE
+	int err = pthread_setname_np("tskt_resolv");
+	if (err != 0)
+		ULOG_ERRNO("pthread_setname_np", err);
+#	endif
+#else
+	int err = pthread_setname_np(pthread_self(), "tskt_resolv");
+	if (err != 0)
+		ULOG_ERRNO("pthread_setname_np", err);
+#endif
 
 	memset(&hints, 0, sizeof(hints));
 
