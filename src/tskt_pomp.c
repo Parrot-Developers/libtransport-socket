@@ -27,6 +27,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <transport-socket/tskt_pomp.h>
+#include <stdbool.h>
 
 #define ULOG_TAG tskt_pomp
 #include <ulog.h>
