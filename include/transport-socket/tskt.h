@@ -53,10 +53,13 @@ extern "C" {
 /* Forward declarations */
 struct tskt_socket;
 #ifdef _WIN32
+#	ifndef __iovec_defined
+#		define __iovec_defined 1
 struct iovec {
 	void *iov_base;
 	size_t iov_len;
 };
+#	endif
 #else
 struct iovec;
 #endif
