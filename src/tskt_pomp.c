@@ -263,7 +263,6 @@ int tskt_pomp_send_msg(struct tskt_pomp *self, const struct pomp_msg *msg)
 int tskt_pomp_send(struct tskt_pomp *self, uint32_t msgid, const char *fmt, ...)
 {
 	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);
-	ULOG_ERRNO_RETURN_ERR_IF(fmt == NULL, EINVAL);
 
 	int res = 0;
 	va_list args;
@@ -279,7 +278,6 @@ int tskt_pomp_sendv(struct tskt_pomp *self,
 		    va_list args)
 {
 	ULOG_ERRNO_RETURN_ERR_IF(self == NULL, EINVAL);
-	ULOG_ERRNO_RETURN_ERR_IF(fmt == NULL, EINVAL);
 
 	/* Write message and send it*/
 	int res = pomp_msg_writev(self->wmsg, msgid, fmt, args);

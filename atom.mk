@@ -28,13 +28,47 @@ endif
 include $(BUILD_LIBRARY)
 
 
+ifdef TARGET_TEST
+
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := tst-libtransport-socket
+LOCAL_CFLAGS := -DTARGET_TEST -D_GNU_SOURCE -std=gnu99
+LOCAL_C_INCLUDES := $(LOCAL_PATH)/src
+LOCAL_SRC_FILES := \
+	tests/tskt_test.c \
+	tests/tskt_test_fakes.c \
+	tests/tskt_test_dispatch.c \
+	tests/tskt_test_resolv.c \
+	tests/tskt_test_pomp.c \
+	tests/tskt_test_impl.c \
+	tests/tskt_test_client.c \
+	tests/tskt_test_resolv_impl.c
+LOCAL_LIBRARIES := \
+	libcunit \
+	libfutils \
+	libpomp \
+	libtransport-packet \
+	libtransport-socket \
+	libulog
+
+ifeq ("$(TARGET_OS)","windows")
+  LOCAL_CFLAGS += -D_WIN32_WINNT=0x0600
+  LOCAL_LDLIBS += -lws2_32
+endif
+
+include $(BUILD_EXECUTABLE)
+
+endif
+
+
 include $(CLEAR_VARS)
 
 LOCAL_MODULE := tskt-test
 LOCAL_CATEGORY_PATH := multimedia
 LOCAL_DESCRIPTION := Transport socket library test program
 LOCAL_SRC_FILES := \
-	tests/tskt_test.c
+	tools/tskt_test.c
 LOCAL_LIBRARIES := \
 	libpomp \
 	libtransport-packet \
@@ -51,7 +85,7 @@ LOCAL_CATEGORY_PATH := multimedia
 LOCAL_DESCRIPTION := DNS resolver library test program
 LOCAL_CFLAGS := -std=gnu99
 LOCAL_SRC_FILES := \
-	tests/tskt_resolv_test.c
+	tools/tskt_resolv_test.c
 LOCAL_LIBRARIES := \
 	libpomp \
 	libtransport-socket \
@@ -67,7 +101,7 @@ LOCAL_CATEGORY_PATH := multimedia
 LOCAL_DESCRIPTION := Transport socket library TCP server test program
 LOCAL_CFLAGS := -std=gnu99
 LOCAL_SRC_FILES := \
-	tests/tskt_tcp_server.c
+	tools/tskt_tcp_server.c
 LOCAL_LIBRARIES := \
 	libpomp \
 	libtransport-packet \
@@ -84,7 +118,7 @@ LOCAL_CATEGORY_PATH := multimedia
 LOCAL_DESCRIPTION := Transport socket library TCP client test program
 LOCAL_CFLAGS := -std=gnu99
 LOCAL_SRC_FILES := \
-	tests/tskt_tcp_client.c
+	tools/tskt_tcp_client.c
 LOCAL_LIBRARIES := \
 	libfutils \
 	libpomp \
@@ -108,7 +142,7 @@ LOCAL_CATEGORY_PATH := multimedia
 LOCAL_DESCRIPTION := Transport socket library client test program
 LOCAL_CFLAGS := -std=gnu99
 LOCAL_SRC_FILES := \
-	tests/tskt_client_test.c
+	tools/tskt_client_test.c
 LOCAL_LIBRARIES := \
 	libfutils \
 	libpomp \

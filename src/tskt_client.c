@@ -142,8 +142,10 @@ sock_event_cb(struct tskt_socket *sock, uint32_t revents, void *userdata)
 			goto error;
 		}
 		if (len == 0) {
-			/* connection closed */
-			tskt_socket_set_event_cb(sock, 0, NULL, NULL);
+			/* connection closed, destroy socket to remove from
+			 * epoll */
+			tskt_socket_destroy(self->sock);
+			self->sock = NULL;
 			self->connected = false;
 			notify_event(self, TSKT_CLIENT_EVENT_DISCONNECTED);
 
@@ -169,8 +171,9 @@ sock_event_cb(struct tskt_socket *sock, uint32_t revents, void *userdata)
 	return;
 
 error:
-	/* internal error, remove socket notifications */
-	tskt_socket_set_event_cb(sock, 0, NULL, NULL);
+	/* internal error, destroy socket to remove from epoll */
+	tskt_socket_destroy(self->sock);
+	self->sock = NULL;
 	if (self->connected) {
 		self->connected = false;
 		notify_event(self, TSKT_CLIENT_EVENT_DISCONNECTED);
@@ -230,10 +233,19 @@ static int client_start(struct tskt_client *self)
 		tmp_sock = self->cbs.socket_upgrade_cb(
 			self, self->sock, self->cbs_userdata);
 		self->notifying--;
-		if (tmp_sock != NULL)
+		if (tmp_sock != NULL) {
 			self->sock = tmp_sock;
-		else
+		} else {
+			/* res still holds the (0 or in-progress) result of the
+			 * preceding tskt_socket_connect() call: without this,
+			 * client_start() (and thus tskt_client_connect())
+			 * would report success even though the upgrade was
+			 * rejected, leaving the client stuck with started
+			 * latched true, sock NULL, and no reconnect timer
+			 * armed. */
+			res = -ECANCELED;
 			goto error;
+		}
 	}
 
 	res = tskt_socket_set_event_cb(
